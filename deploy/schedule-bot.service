@@ -1,0 +1,17 @@
+[Unit]
+Description=TSPK schedule Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=schedulebot
+Group=schedulebot
+WorkingDirectory=/opt/schedule-bot
+EnvironmentFile=/opt/schedule-bot/.env
+ExecStart=/opt/schedule-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+aiogram>=3.7
+aiohttp>=3.9
+beautifulsoup4>=4.12
+aiosqlite>=0.20
+python-dotenv>=1.0
+tzdata>=2024.1
