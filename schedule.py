@@ -22,7 +22,7 @@ MONTHS = {
     "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
 }
 
-_page_cache = {"dates": None, "ts": 0.0}
+_page_cache = {"dates": None, "ts": 0.0, "updated": None}
 
 
 async def _fetch(url):
@@ -43,6 +43,14 @@ def _norm_group(s):
 
 def _norm_text(s):
     return _inline(s).casefold().replace("ё", "е")
+
+
+def _parse_times(tm):
+    toks = re.findall(r"(\d{1,2})[.:](\d{2})", tm or "")
+    mins = [int(h) * 60 + int(m) for h, m in toks]
+    start = mins[0] if mins else None
+    end = mins[1] if len(mins) > 1 else None
+    return start, end
 
 
 def _lines(s):
@@ -85,13 +93,31 @@ def parse_dates(html):
     return result
 
 
+def _parse_updated(html):
+    m = re.search(
+        r"Обновлено\s+(\d{2}\.\d{2}\.\d{4}(?:\s+\d{1,2}[:.]\d{2})?)", html
+    )
+    return m.group(1) if m else None
+
+
 async def get_dates():
     now = time.time()
     if _page_cache["dates"] is None or now - _page_cache["ts"] > PAGE_CACHE_TTL:
         html = await _fetch(PAGE_URL)
         _page_cache["dates"] = parse_dates(html)
+        _page_cache["updated"] = _parse_updated(html)
         _page_cache["ts"] = now
     return _page_cache["dates"]
+
+
+async def page_updated():
+    await get_dates()
+    return _page_cache["updated"]
+
+
+async def sheet_url(d):
+    sid = await get_sheet_id(d)
+    return f"https://docs.google.com/spreadsheets/d/{sid}/edit" if sid else None
 
 
 async def get_sheet_id(d):
@@ -123,6 +149,71 @@ def all_groups(rows):
         if _is_header(r):
             groups += [_inline(c) for c in r[2:] if _inline(c)]
     return sorted(set(groups))
+
+
+def day_pairs(rows):
+    seen = {}
+    for r in rows:
+        if _is_header(r) or not r:
+            continue
+        num = _inline(r[0]) if len(r) > 0 else ""
+        tm = "-".join(_lines(r[1])) if len(r) > 1 else ""
+        if num.isdigit() and num not in seen:
+            seen[num] = tm
+    return [(n, seen[n]) for n in sorted(seen, key=int)]
+
+
+def current_and_next(lessons, now_min):
+    timed = []
+    for num, tm, cell in lessons:
+        start, end = _parse_times(tm)
+        if start is not None:
+            timed.append((start, end, num, tm, cell))
+    timed.sort()
+    current = nxt = None
+    for start, end, num, tm, cell in timed:
+        if end is not None and start <= now_min <= end:
+            current = (num, tm, cell)
+        elif start > now_min and nxt is None:
+            nxt = (num, tm, cell)
+    return current, nxt
+
+
+def extract_for_room(rows, room):
+    digits = re.sub(r"\D", "", room)
+    if not digits:
+        return []
+    pattern = re.compile(r"каб\.?\s*0*" + re.escape(digits) + r"\b")
+    result = []
+    header = None
+    for r in rows:
+        if _is_header(r):
+            header = r
+            continue
+        if header is None:
+            continue
+        num = _inline(r[0]) if len(r) > 0 else ""
+        tm = "-".join(_lines(r[1])) if len(r) > 1 else ""
+        for col in range(2, len(r)):
+            raw = r[col]
+            if not raw.strip():
+                continue
+            if pattern.search(_norm_text(raw)):
+                group = _inline(header[col]) if col < len(header) else ""
+                result.append((num, tm, group, "\n".join(_lines(raw))))
+    return result
+
+
+def teacher_windows(rows, lessons):
+    busy = sorted({int(n) for n, tm, g, c in lessons if n.isdigit()})
+    if not busy:
+        return []
+    lo, hi = busy[0], busy[-1]
+    return [
+        (n, tm)
+        for n, tm in day_pairs(rows)
+        if n.isdigit() and lo < int(n) < hi and int(n) not in busy
+    ]
 
 
 def extract_for_group(rows, group):
@@ -172,10 +263,44 @@ def extract_for_teacher(rows, teacher):
     return result
 
 
-def format_teacher_schedule(d, teacher, lessons):
+def format_teacher_schedule(d, teacher, lessons, windows=None):
     head = f"Расписание преподавателя на {d.strftime('%d.%m.%Y')}\nПреподаватель: {teacher}"
     if not lessons:
         return head + "\n\nПар нет"
+    blocks = [head]
+    for num, tm, group, cell in lessons:
+        title = (f"{num} пара" + (f", {tm}" if tm else "")) if num else tm
+        parts = [p for p in (title, f"Группа {group}" if group else "", cell) if p]
+        blocks.append("\n".join(parts))
+    if windows:
+        w = ", ".join(f"{n} пара ({tm})" if tm else f"{n} пара" for n, tm in windows)
+        blocks.append("Окна между парами: " + w)
+    return "\n\n".join(blocks)
+
+
+def format_now_next(d, group, lessons, now_min):
+    head = f"Группа {group}, {d.strftime('%d.%m.%Y')}"
+    if not lessons:
+        return head + "\n\nНа сегодня расписания нет"
+    current, nxt = current_and_next(lessons, now_min)
+    parts = [head]
+    if current:
+        num, tm, cell = current
+        parts.append(f"Сейчас идет {num} пара (до {tm.split('-')[-1]}):\n{cell}")
+    else:
+        parts.append("Сейчас пары нет")
+    if nxt:
+        num, tm, cell = nxt
+        parts.append(f"Следующая — {num} пара в {tm.split('-')[0]}:\n{cell}")
+    else:
+        parts.append("Дальше пар на сегодня нет")
+    return "\n\n".join(parts)
+
+
+def format_room_schedule(d, room, lessons):
+    head = f"Кабинет {room}, {d.strftime('%d.%m.%Y')}"
+    if not lessons:
+        return head + "\n\nЗанятий нет"
     blocks = [head]
     for num, tm, group, cell in lessons:
         title = (f"{num} пара" + (f", {tm}" if tm else "")) if num else tm
@@ -247,7 +372,35 @@ async def get_teacher_schedule(d, teacher):
     lessons = extract_for_teacher(rows, teacher)
     if not lessons:
         return "not_found", None
+    return "ok", {"lessons": lessons, "windows": teacher_windows(rows, lessons)}
+
+
+async def get_room_schedule(d, room):
+    sheet_id = await get_sheet_id(d)
+    if not sheet_id:
+        return "no_date", None
+    rows = await fetch_csv(sheet_id)
+    if not has_schedule(rows):
+        return "bad_sheet", None
+    lessons = extract_for_room(rows, room)
+    if not lessons:
+        return "not_found", None
     return "ok", lessons
+
+
+async def all_known_groups(around):
+    dates = await upcoming_dates(around, limit=5)
+    if not dates:
+        known = sorted(await get_dates())
+        dates = known[-5:]
+    for d in dates:
+        sid = await get_sheet_id(d)
+        if not sid:
+            continue
+        rows = await fetch_csv(sid)
+        if has_schedule(rows):
+            return all_groups(rows)
+    return []
 
 
 if __name__ == "__main__":

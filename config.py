@@ -23,3 +23,7 @@ WATCH_DAYS = 2
 
 def today():
     return datetime.now(TZ).date()
+
+
+def now():
+    return datetime.now(TZ)
