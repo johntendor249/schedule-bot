@@ -25,6 +25,7 @@ BTN_TOMORROW = "Завтра"
 BTN_UPCOMING = "Ближайшие даты"
 BTN_GROUP = "Сменить группу"
 BTN_NOTIFY = "Уведомления"
+BTN_TEACHER = "Преподаватель"
 
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -32,14 +33,19 @@ HELP_TEXT = (
     "Показываю расписание ТСПК по твоей группе.\n\n"
     "Кнопки: Сегодня, Завтра, Ближайшие даты.\n"
     "Можно прислать дату текстом: 05.06 или 05.06.2026.\n\n"
+    "Преподаватель — расписание по фамилии преподавателя.\n\n"
     "/group — сменить группу\n"
+    "/teacher — поиск по преподавателю\n"
     "/subscribe — присылать уведомления об изменениях\n"
     "/unsubscribe — выключить уведомления"
 )
 
+teacher_lookup = {}
+
 
 class Form(StatesGroup):
     waiting_group = State()
+    waiting_teacher = State()
 
 
 def main_kb():
@@ -47,6 +53,7 @@ def main_kb():
         keyboard=[
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW)],
             [KeyboardButton(text=BTN_UPCOMING)],
+            [KeyboardButton(text=BTN_TEACHER)],
             [KeyboardButton(text=BTN_GROUP), KeyboardButton(text=BTN_NOTIFY)],
         ],
         resize_keyboard=True,
@@ -228,6 +235,70 @@ async def pick_date(callback: CallbackQuery):
         return
     d = date.fromisoformat(callback.data.split(":", 1)[1])
     await send_schedule(callback.message, group, d)
+    await callback.answer()
+
+
+async def send_teacher(message: Message, teacher, d):
+    try:
+        status, payload = await schedule.get_teacher_schedule(d, teacher)
+    except Exception:
+        logging.exception("get_teacher_schedule failed")
+        await message.answer("Не получилось загрузить расписание, попробуй позже")
+        return
+    if status == "ok":
+        await message.answer(schedule.format_teacher_schedule(d, teacher, payload))
+    elif status == "no_date":
+        await message.answer(f"На {d.strftime('%d.%m.%Y')} расписания нет")
+    elif status == "not_found":
+        await message.answer(
+            f"На {d.strftime('%d.%m.%Y')} пар у преподавателя {teacher} не найдено. "
+            "Проверь фамилию или выбери другую дату."
+        )
+    else:
+        await message.answer("Не получилось прочитать таблицу с расписанием, попробуй позже")
+
+
+async def send_teacher_dates(message: Message):
+    dates = await schedule.upcoming_dates(config.today())
+    if not dates:
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=date_label(d), callback_data=f"tdate:{d.isoformat()}")]
+            for d in dates
+        ]
+    )
+    await message.answer("Другая дата:", reply_markup=kb)
+
+
+@router.message(Command("teacher"))
+@router.message(F.text == BTN_TEACHER)
+async def ask_teacher(message: Message, state: FSMContext):
+    await state.set_state(Form.waiting_teacher)
+    await message.answer("Напиши фамилию преподавателя, например Соколова")
+
+
+@router.message(Form.waiting_teacher)
+async def search_teacher(message: Message, state: FSMContext):
+    if not message.text or not message.text.strip():
+        await message.answer("Напиши фамилию преподавателя текстом, например Соколова")
+        return
+    teacher = message.text.strip()
+    teacher_lookup[message.from_user.id] = teacher
+    await state.clear()
+    await send_teacher(message, teacher, config.today())
+    await send_teacher_dates(message)
+
+
+@router.callback_query(F.data.startswith("tdate:"))
+async def pick_teacher_date(callback: CallbackQuery):
+    teacher = teacher_lookup.get(callback.from_user.id)
+    if not teacher:
+        await callback.message.answer("Повтори поиск: /teacher и фамилию")
+        await callback.answer()
+        return
+    d = date.fromisoformat(callback.data.split(":", 1)[1])
+    await send_teacher(callback.message, teacher, d)
     await callback.answer()
 
 

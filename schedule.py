@@ -41,6 +41,10 @@ def _norm_group(s):
     return re.sub(r"[^0-9a-zа-яё]", "", _inline(s).casefold())
 
 
+def _norm_text(s):
+    return _inline(s).casefold().replace("ё", "е")
+
+
 def _lines(s):
     return [ln.strip() for ln in s.splitlines() if ln.strip()]
 
@@ -143,6 +147,43 @@ def extract_for_group(rows, group):
     return None
 
 
+def extract_for_teacher(rows, teacher):
+    words = _norm_text(teacher).split()
+    if not words:
+        return []
+    pattern = re.compile(r"\b" + re.escape(words[0]) + r"\b")
+    result = []
+    header = None
+    for r in rows:
+        if _is_header(r):
+            header = r
+            continue
+        if header is None:
+            continue
+        num = _inline(r[0]) if len(r) > 0 else ""
+        tm = "-".join(_lines(r[1])) if len(r) > 1 else ""
+        for col in range(2, len(r)):
+            raw = r[col]
+            if not raw.strip():
+                continue
+            if pattern.search(_norm_text(raw)):
+                group = _inline(header[col]) if col < len(header) else ""
+                result.append((num, tm, group, "\n".join(_lines(raw))))
+    return result
+
+
+def format_teacher_schedule(d, teacher, lessons):
+    head = f"Расписание преподавателя на {d.strftime('%d.%m.%Y')}\nПреподаватель: {teacher}"
+    if not lessons:
+        return head + "\n\nПар нет"
+    blocks = [head]
+    for num, tm, group, cell in lessons:
+        title = (f"{num} пара" + (f", {tm}" if tm else "")) if num else tm
+        parts = [p for p in (title, f"Группа {group}" if group else "", cell) if p]
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
+
+
 def format_schedule(d, group, lessons):
     head = f"Расписание на {d.strftime('%d.%m.%Y')}\nГруппа: {group}"
     if not lessons:
@@ -193,6 +234,19 @@ async def get_schedule(d, group):
     lessons = extract_for_group(rows, group)
     if lessons is None:
         return "no_group", all_groups(rows)
+    return "ok", lessons
+
+
+async def get_teacher_schedule(d, teacher):
+    sheet_id = await get_sheet_id(d)
+    if not sheet_id:
+        return "no_date", None
+    rows = await fetch_csv(sheet_id)
+    if not has_schedule(rows):
+        return "bad_sheet", None
+    lessons = extract_for_teacher(rows, teacher)
+    if not lessons:
+        return "not_found", None
     return "ok", lessons
 
 
