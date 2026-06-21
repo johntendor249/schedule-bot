@@ -30,6 +30,11 @@ BTN_NOTIFY = "Уведомления"
 BTN_TEACHER = "Преподаватель"
 BTN_ROOM = "Кабинет"
 
+MENU_BUTTONS = {
+    BTN_NOW, BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_UPCOMING,
+    BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM,
+}
+
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 HELP_TEXT = (
@@ -139,21 +144,26 @@ async def send_schedule(message: Message, group, d):
         await message.answer("Не получилось прочитать таблицу с расписанием, попробуй позже")
 
 
-async def require_group(message: Message):
+async def require_group(message: Message, state: FSMContext):
     group = await db.get_group(message.from_user.id)
     if not group:
-        await message.answer("Сначала укажи группу: /group")
+        await state.set_state(Form.waiting_group)
+        await message.answer("Сначала напиши свою группу, например ИСиП-21")
     return group
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     group = await db.get_group(message.from_user.id)
-    if group:
-        await message.answer(f"Твоя группа: {group}", reply_markup=main_kb())
-    else:
-        await state.set_state(Form.waiting_group)
-        await message.answer("Привет. Напиши свою группу, например ИСиП-21")
+    hint = (
+        "Я бот с расписанием ТСПК.\n\n"
+        "Студентам: нажми Сегодня, Завтра или Неделя — один раз спрошу группу.\n"
+        "Преподавателям: нажми Преподаватель и введи фамилию.\n\n"
+        "Все кнопки на клавиатуре снизу. Команды — /help"
+    )
+    head = f"Твоя группа: {group}" if group else "Привет!"
+    await message.answer(f"{head}\n\n{hint}", reply_markup=main_kb())
 
 
 @router.message(Command("help"))
@@ -168,7 +178,7 @@ async def ask_group(message: Message, state: FSMContext):
     await message.answer("Напиши группу, например ИСиП-21")
 
 
-@router.message(Form.waiting_group)
+@router.message(Form.waiting_group, F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
 async def save_group(message: Message, state: FSMContext):
     if not message.text or not message.text.strip():
         await message.answer("Напиши группу текстом, например ИСиП-21")
@@ -210,8 +220,8 @@ async def enable_notify(message: Message, group):
 
 
 @router.message(Command("subscribe"))
-async def cmd_subscribe(message: Message):
-    group = await require_group(message)
+async def cmd_subscribe(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if group:
         await enable_notify(message, group)
 
@@ -253,8 +263,8 @@ async def cmd_look(message: Message):
 
 
 @router.message(F.text == BTN_NOTIFY)
-async def btn_notify(message: Message):
-    group = await require_group(message)
+async def btn_notify(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if not group:
         return
     if await db.get_notify(message.from_user.id):
@@ -265,23 +275,23 @@ async def btn_notify(message: Message):
 
 
 @router.message(F.text == BTN_TODAY)
-async def btn_today(message: Message):
-    group = await require_group(message)
+async def btn_today(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if group:
         await send_schedule(message, group, config.today())
 
 
 @router.message(F.text == BTN_TOMORROW)
-async def btn_tomorrow(message: Message):
-    group = await require_group(message)
+async def btn_tomorrow(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if group:
         await send_schedule(message, group, config.today() + timedelta(days=1))
 
 
 @router.message(Command("now"))
 @router.message(F.text == BTN_NOW)
-async def btn_now(message: Message):
-    group = await require_group(message)
+async def btn_now(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if not group:
         return
     d = config.today()
@@ -306,8 +316,8 @@ async def btn_now(message: Message):
 
 @router.message(Command("week"))
 @router.message(F.text == BTN_WEEK)
-async def btn_week(message: Message):
-    group = await require_group(message)
+async def btn_week(message: Message, state: FSMContext):
+    group = await require_group(message, state)
     if not group:
         return
     dates = await schedule.upcoming_dates(config.today(), limit=6)
@@ -399,7 +409,7 @@ async def ask_teacher(message: Message, state: FSMContext):
     await message.answer("Напиши фамилию преподавателя, например Соколова")
 
 
-@router.message(Form.waiting_teacher)
+@router.message(Form.waiting_teacher, F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
 async def search_teacher(message: Message, state: FSMContext):
     if not message.text or not message.text.strip():
         await message.answer("Напиши фамилию преподавателя текстом, например Соколова")
@@ -463,7 +473,7 @@ async def ask_room(message: Message, state: FSMContext):
     await message.answer("Напиши номер кабинета, например 305")
 
 
-@router.message(Form.waiting_room)
+@router.message(Form.waiting_room, F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
 async def search_room(message: Message, state: FSMContext):
     if not message.text or not message.text.strip():
         await message.answer("Напиши номер кабинета, например 305")
@@ -493,6 +503,6 @@ async def free_text(message: Message):
     if d is None:
         await message.answer("Не понял. Список команд: /help")
         return
-    group = await require_group(message)
+    group = await require_group(message, state)
     if group:
         await send_schedule(message, group, d)
