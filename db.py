@@ -14,6 +14,8 @@ async def init_db():
                 username TEXT,
                 first_name TEXT,
                 last_seen TEXT,
+                joined_at TEXT,
+                hits INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -25,6 +27,14 @@ async def init_db():
                 day TEXT NOT NULL,
                 signature TEXT NOT NULL,
                 PRIMARY KEY (group_name, day)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feature_counts (
+                feature TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -40,6 +50,8 @@ async def _ensure_columns(conn):
         ("username", "TEXT"),
         ("first_name", "TEXT"),
         ("last_seen", "TEXT"),
+        ("joined_at", "TEXT"),
+        ("hits", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
@@ -48,14 +60,34 @@ async def _ensure_columns(conn):
 async def touch_user(user_id, username, first_name):
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
-            "INSERT INTO users (user_id, group_name, username, first_name, last_seen) "
-            "VALUES (?, '', ?, ?, datetime('now')) "
+            "INSERT INTO users "
+            "(user_id, group_name, username, first_name, last_seen, joined_at, hits) "
+            "VALUES (?, '', ?, ?, datetime('now'), datetime('now'), 1) "
             "ON CONFLICT(user_id) DO UPDATE SET "
             "username = excluded.username, first_name = excluded.first_name, "
-            "last_seen = datetime('now')",
+            "last_seen = datetime('now'), hits = hits + 1",
             (user_id, username, first_name),
         )
         await conn.commit()
+
+
+async def bump_feature(feature):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO feature_counts (feature, count) VALUES (?, 1) "
+            "ON CONFLICT(feature) DO UPDATE SET count = count + 1",
+            (feature,),
+        )
+        await conn.commit()
+
+
+async def feature_stats(limit=20):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT feature, count FROM feature_counts ORDER BY count DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return await cur.fetchall()
 
 
 async def set_group(user_id, group):
@@ -142,18 +174,40 @@ async def stats():
         total = await count()
         with_group = await count("group_name <> ''")
         subs = await count("notify = 1")
-        active = await count("last_seen >= datetime('now', '-7 days')")
+        dau = await count("last_seen >= date('now')")
+        wau = await count("last_seen >= datetime('now', '-7 days')")
+        mau = await count("last_seen >= datetime('now', '-30 days')")
+        new_today = await count("joined_at >= date('now')")
+        new_week = await count("joined_at >= datetime('now', '-7 days')")
+        async with conn.execute("SELECT COALESCE(SUM(hits), 0) FROM users") as cur:
+            total_hits = (await cur.fetchone())[0]
         async with conn.execute(
             "SELECT group_name, COUNT(*) c FROM users WHERE group_name <> '' "
             "GROUP BY group_name ORDER BY c DESC LIMIT 10"
         ) as cur:
             groups = await cur.fetchall()
+        async with conn.execute(
+            "SELECT group_name FROM users WHERE group_name <> ''"
+        ) as cur:
+            gnames = [r[0] for r in await cur.fetchall()]
+    spec = {}
+    for g in gnames:
+        key = g.split("-")[0] if "-" in g else g
+        spec[key] = spec.get(key, 0) + 1
+    specialties = sorted(spec.items(), key=lambda kv: -kv[1])
     return {
         "total": total,
         "with_group": with_group,
+        "no_group": total - with_group,
         "subs": subs,
-        "active": active,
+        "dau": dau,
+        "wau": wau,
+        "mau": mau,
+        "new_today": new_today,
+        "new_week": new_week,
+        "total_hits": total_hits,
         "groups": groups,
+        "specialties": specialties,
     }
 
 

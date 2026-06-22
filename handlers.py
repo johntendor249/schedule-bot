@@ -21,13 +21,30 @@ import schedule
 router = Router()
 
 
+def _feature_of(event):
+    text = getattr(event, "text", None)
+    if text:
+        text = text.strip()
+        if text in MENU_BUTTONS:
+            return text
+        if text.startswith("/"):
+            return text.split()[0].lower()
+        return "ввод текста"
+    if getattr(event, "data", None):
+        return "выбор даты"
+    return None
+
+
 async def track_user(handler, event, data):
     user = getattr(event, "from_user", None)
     if user:
         try:
             await db.touch_user(user.id, user.username, user.first_name)
+            feature = _feature_of(event)
+            if feature:
+                await db.bump_feature(feature)
         except Exception:
-            logging.exception("touch_user failed")
+            logging.exception("track_user failed")
     return await handler(event, data)
 
 
@@ -198,13 +215,19 @@ async def cmd_stats(message: Message):
     lines = [
         "Статистика бота",
         "",
-        f"Всего пользователей: {s['total']}",
-        f"С указанной группой: {s['with_group']}",
-        f"Подписаны на уведомления: {s['subs']}",
-        f"Активны за 7 дней: {s['active']}",
+        f"Всего: {s['total']} (с группой {s['with_group']}, без группы {s['no_group']})",
+        f"Подписаны: {s['subs']}",
+        f"Активны: сегодня {s['dau']}, 7 дней {s['wau']}, 30 дней {s['mau']}",
+        f"Новые: сегодня {s['new_today']}, за неделю {s['new_week']}",
+        f"Всего действий: {s['total_hits']}",
     ]
+    if s["specialties"]:
+        lines += ["", "По специальностям:"] + [f"{k} — {c}" for k, c in s["specialties"]]
     if s["groups"]:
         lines += ["", "Топ групп:"] + [f"{g} — {c}" for g, c in s["groups"]]
+    feats = await db.feature_stats()
+    if feats:
+        lines += ["", "Использование:"] + [f"{f} — {c}" for f, c in feats]
     recent = await db.recent_users(10)
     if recent:
         lines += ["", "Последние:"]
