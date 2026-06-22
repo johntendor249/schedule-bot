@@ -9,8 +9,11 @@ async def init_db():
             """
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                group_name TEXT NOT NULL,
+                group_name TEXT NOT NULL DEFAULT '',
                 notify INTEGER NOT NULL DEFAULT 0,
+                username TEXT,
+                first_name TEXT,
+                last_seen TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -25,17 +28,34 @@ async def init_db():
             )
             """
         )
-        await _ensure_notify_column(conn)
+        await _ensure_columns(conn)
         await conn.commit()
 
 
-async def _ensure_notify_column(conn):
+async def _ensure_columns(conn):
     async with conn.execute("PRAGMA table_info(users)") as cur:
-        cols = [row[1] for row in await cur.fetchall()]
-    if "notify" not in cols:
+        cols = {row[1] for row in await cur.fetchall()}
+    for name, decl in (
+        ("notify", "INTEGER NOT NULL DEFAULT 0"),
+        ("username", "TEXT"),
+        ("first_name", "TEXT"),
+        ("last_seen", "TEXT"),
+    ):
+        if name not in cols:
+            await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+
+
+async def touch_user(user_id, username, first_name):
+    async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
-            "ALTER TABLE users ADD COLUMN notify INTEGER NOT NULL DEFAULT 0"
+            "INSERT INTO users (user_id, group_name, username, first_name, last_seen) "
+            "VALUES (?, '', ?, ?, datetime('now')) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "username = excluded.username, first_name = excluded.first_name, "
+            "last_seen = datetime('now')",
+            (user_id, username, first_name),
         )
+        await conn.commit()
 
 
 async def set_group(user_id, group):
@@ -110,3 +130,38 @@ async def set_signature(group, day, signature):
             (group, day, signature),
         )
         await conn.commit()
+
+
+async def stats():
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async def count(where=""):
+            q = "SELECT COUNT(*) FROM users" + (f" WHERE {where}" if where else "")
+            async with conn.execute(q) as cur:
+                return (await cur.fetchone())[0]
+
+        total = await count()
+        with_group = await count("group_name <> ''")
+        subs = await count("notify = 1")
+        active = await count("last_seen >= datetime('now', '-7 days')")
+        async with conn.execute(
+            "SELECT group_name, COUNT(*) c FROM users WHERE group_name <> '' "
+            "GROUP BY group_name ORDER BY c DESC LIMIT 10"
+        ) as cur:
+            groups = await cur.fetchall()
+    return {
+        "total": total,
+        "with_group": with_group,
+        "subs": subs,
+        "active": active,
+        "groups": groups,
+    }
+
+
+async def recent_users(limit=10):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT user_id, username, first_name, group_name, last_seen "
+            "FROM users ORDER BY last_seen DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return await cur.fetchall()

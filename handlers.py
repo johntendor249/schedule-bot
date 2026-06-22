@@ -20,6 +20,20 @@ import schedule
 
 router = Router()
 
+
+async def track_user(handler, event, data):
+    user = getattr(event, "from_user", None)
+    if user:
+        try:
+            await db.touch_user(user.id, user.username, user.first_name)
+        except Exception:
+            logging.exception("touch_user failed")
+    return await handler(event, data)
+
+
+router.message.middleware(track_user)
+router.callback_query.middleware(track_user)
+
 BTN_NOW = "Сейчас"
 BTN_TODAY = "Сегодня"
 BTN_TOMORROW = "Завтра"
@@ -169,6 +183,35 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(HELP_TEXT)
+
+
+@router.message(Command("id"))
+async def cmd_id(message: Message):
+    await message.answer(f"Твой id: {message.from_user.id}")
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    s = await db.stats()
+    lines = [
+        "Статистика бота",
+        "",
+        f"Всего пользователей: {s['total']}",
+        f"С указанной группой: {s['with_group']}",
+        f"Подписаны на уведомления: {s['subs']}",
+        f"Активны за 7 дней: {s['active']}",
+    ]
+    if s["groups"]:
+        lines += ["", "Топ групп:"] + [f"{g} — {c}" for g, c in s["groups"]]
+    recent = await db.recent_users(10)
+    if recent:
+        lines += ["", "Последние:"]
+        for uid, username, first, group, seen in recent:
+            who = f"@{username}" if username else (first or f"id{uid}")
+            lines.append(f"{who} — {group or '—'} — {seen or '?'}")
+    await send_long(message, "\n".join(lines))
 
 
 @router.message(Command("group"))
