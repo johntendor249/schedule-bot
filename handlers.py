@@ -62,11 +62,16 @@ BTN_GROUP = "Сменить группу"
 BTN_NOTIFY = "Уведомления"
 BTN_TEACHER = "Преподаватель"
 BTN_ROOM = "Кабинет"
+BTN_FAV = "Избранное"
 
 MENU_BUTTONS = {
     BTN_NOW, BTN_BELLS, BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_UPCOMING,
-    BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM,
+    BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM, BTN_FAV,
 }
+
+FAV_KINDS = {"g": "group", "t": "teacher", "r": "room"}
+FAV_LETTER = {"group": "g", "teacher": "t", "room": "r"}
+FAV_LABEL = {"group": "Группа", "teacher": "Препод", "room": "Каб"}
 
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -77,7 +82,8 @@ HELP_TEXT = (
     "Сегодня / Завтра / Неделя / Ближайшие даты — расписание твоей группы.\n"
     "Дату можно прислать текстом: 05.06 или 05.06.2026.\n"
     "Преподаватель — расписание по фамилии, можно запомнить свою.\n"
-    "Кабинет — что проходит в кабинете.\n\n"
+    "Кабинет — что проходит в кабинете.\n"
+    "Избранное — быстрый доступ к сохраненным группам, преподам и кабинетам.\n\n"
     "/group — сменить группу\n"
     "/groups — список всех групп\n"
     "/look ГРУППА [дата] — расписание другой группы без сохранения\n"
@@ -104,6 +110,7 @@ def main_kb():
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW)],
             [KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_UPCOMING)],
             [KeyboardButton(text=BTN_TEACHER), KeyboardButton(text=BTN_ROOM)],
+            [KeyboardButton(text=BTN_FAV)],
             [KeyboardButton(text=BTN_GROUP), KeyboardButton(text=BTN_NOTIFY)],
         ],
         resize_keyboard=True,
@@ -158,10 +165,15 @@ async def source_footer(d):
     return "\n\n" + "\n".join(lines) if lines else ""
 
 
-def ics_day_kb(d):
+def day_actions_kb(group, d):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="В календарь", callback_data=f"ics:{d.isoformat()}")]
+            [
+                InlineKeyboardButton(
+                    text="В календарь", callback_data=f"ics:{group}:{d.isoformat()}"
+                ),
+                InlineKeyboardButton(text="В избранное", callback_data=f"fa:g:{group}"),
+            ]
         ]
     )
 
@@ -174,7 +186,7 @@ async def send_schedule(message: Message, group, d, offer_ics=False):
         await message.answer("Не получилось загрузить расписание, попробуй позже")
         return
     if status == "ok":
-        kb = ics_day_kb(d) if offer_ics and payload else None
+        kb = day_actions_kb(group, d) if offer_ics and payload else None
         await message.answer(
             schedule.format_schedule(d, group, payload) + await source_footer(d),
             reply_markup=kb,
@@ -340,7 +352,7 @@ async def cmd_look(message: Message):
             return
     else:
         d = config.today()
-    await send_schedule(message, group, d)
+    await send_schedule(message, group, d, offer_ics=True)
 
 
 @router.message(F.text == BTN_NOTIFY)
@@ -487,11 +499,9 @@ async def send_ics(message: Message, events, filename):
 
 @router.callback_query(F.data.startswith("ics:"))
 async def ics_day(callback: CallbackQuery):
-    group = await db.get_group(callback.from_user.id)
-    if not group:
-        await callback.answer("Сначала укажи группу", show_alert=True)
-        return
-    d = date.fromisoformat(callback.data.split(":", 1)[1])
+    rest = callback.data[len("ics:"):]
+    group, iso = rest.rsplit(":", 1)
+    d = date.fromisoformat(iso)
     try:
         status, lessons = await schedule.get_schedule(d, group)
     except Exception:
@@ -559,13 +569,13 @@ async def teacher_reply(message: Message, teacher, d, is_saved):
         [InlineKeyboardButton(text=date_label(x), callback_data=f"tdate:{x.isoformat()}")]
         for x in dates
     ]
-    actions = []
+    actions = [InlineKeyboardButton(text="В избранное", callback_data=f"fa:t:{teacher}")]
     if not is_saved:
         actions.append(InlineKeyboardButton(text="Запомнить как мою", callback_data="tsave"))
     actions.append(InlineKeyboardButton(text="Другой преподаватель", callback_data="tother"))
     rows.append(actions)
     await message.answer(
-        "Другая дата, запомнить фамилию или сменить:",
+        "Другая дата, избранное, запомнить фамилию или сменить:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -646,17 +656,17 @@ async def send_room(message: Message, room, d):
         await message.answer("Не получилось прочитать таблицу с расписанием, попробуй позже")
 
 
-async def send_room_dates(message: Message):
+async def send_room_dates(message: Message, room):
     dates = await schedule.upcoming_dates(config.today())
-    if not dates:
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=date_label(d), callback_data=f"rdate:{d.isoformat()}")]
-            for d in dates
-        ]
+    rows = [
+        [InlineKeyboardButton(text=date_label(d), callback_data=f"rdate:{d.isoformat()}")]
+        for d in dates
+    ]
+    rows.append([InlineKeyboardButton(text="В избранное", callback_data=f"fa:r:{room}")])
+    await message.answer(
+        "Другая дата или избранное:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
-    await message.answer("Другая дата:", reply_markup=kb)
 
 
 @router.message(Command("room"))
@@ -675,7 +685,7 @@ async def search_room(message: Message, state: FSMContext):
     room_lookup[message.from_user.id] = room
     await state.clear()
     await send_room(message, room, config.today())
-    await send_room_dates(message)
+    await send_room_dates(message, room)
 
 
 @router.callback_query(F.data.startswith("rdate:"))
@@ -690,12 +700,84 @@ async def pick_room_date(callback: CallbackQuery):
     await callback.answer()
 
 
+def fav_keyboard(favs):
+    rows = []
+    for kind, value in favs:
+        letter = FAV_LETTER[kind]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{FAV_LABEL[kind]} {value}", callback_data=f"fo:{letter}:{value}"
+                ),
+                InlineKeyboardButton(text="убрать", callback_data=f"fx:{letter}:{value}"),
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("fav"))
+@router.message(F.text == BTN_FAV)
+async def btn_fav(message: Message):
+    favs = await db.list_favorites(message.from_user.id)
+    if not favs:
+        await message.answer(
+            "В избранном пусто. Добавляй группы, преподов и кабинеты "
+            "кнопкой «В избранное» под расписанием"
+        )
+        return
+    await message.answer("Избранное:", reply_markup=fav_keyboard(favs))
+
+
+@router.callback_query(F.data.startswith("fa:"))
+async def fav_add(callback: CallbackQuery):
+    _, letter, value = callback.data.split(":", 2)
+    kind = FAV_KINDS.get(letter)
+    if not kind:
+        await callback.answer()
+        return
+    await db.add_favorite(callback.from_user.id, kind, value)
+    await callback.answer("Добавил в избранное")
+
+
+@router.callback_query(F.data.startswith("fo:"))
+async def fav_open(callback: CallbackQuery):
+    _, letter, value = callback.data.split(":", 2)
+    kind = FAV_KINDS.get(letter)
+    msg = callback.message
+    uid = callback.from_user.id
+    if kind == "group":
+        await send_schedule(msg, value, config.today(), offer_ics=True)
+    elif kind == "teacher":
+        teacher_lookup[uid] = value
+        saved = await db.get_teacher(uid)
+        await teacher_reply(msg, value, config.today(), is_saved=(saved == value))
+    elif kind == "room":
+        room_lookup[uid] = value
+        await send_room(msg, value, config.today())
+        await send_room_dates(msg, value)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fx:"))
+async def fav_del(callback: CallbackQuery):
+    _, letter, value = callback.data.split(":", 2)
+    kind = FAV_KINDS.get(letter)
+    if kind:
+        await db.remove_favorite(callback.from_user.id, kind, value)
+    favs = await db.list_favorites(callback.from_user.id)
+    if favs:
+        await callback.message.edit_reply_markup(reply_markup=fav_keyboard(favs))
+    else:
+        await callback.message.edit_text("В избранном пусто")
+    await callback.answer("Убрал")
+
+
 @router.message(F.text)
-async def free_text(message: Message):
+async def free_text(message: Message, state: FSMContext):
     d = parse_user_date(message.text)
     if d is None:
         await message.answer("Не понял. Список команд: /help")
         return
     group = await require_group(message, state)
     if group:
-        await send_schedule(message, group, d)
+        await send_schedule(message, group, d, offer_ics=True)

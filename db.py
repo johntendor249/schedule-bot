@@ -38,6 +38,16 @@ async def init_db():
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS favorites (
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (user_id, kind, value)
+            )
+            """
+        )
         await _ensure_columns(conn)
         await conn.commit()
 
@@ -129,6 +139,33 @@ async def get_teacher(user_id):
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row and row[0] else None
+
+
+async def add_favorite(user_id, kind, value):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, kind, value) VALUES (?, ?, ?)",
+            (user_id, kind, value),
+        )
+        await conn.commit()
+
+
+async def remove_favorite(user_id, kind, value):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "DELETE FROM favorites WHERE user_id = ? AND kind = ? AND value = ?",
+            (user_id, kind, value),
+        )
+        await conn.commit()
+
+
+async def list_favorites(user_id):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT kind, value FROM favorites WHERE user_id = ? ORDER BY kind, value",
+            (user_id,),
+        ) as cur:
+            return await cur.fetchall()
 
 
 async def set_notify(user_id, on):
