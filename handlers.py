@@ -10,6 +10,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -62,11 +65,12 @@ BTN_GROUP = "Сменить группу"
 BTN_NOTIFY = "Уведомления"
 BTN_TEACHER = "Преподаватель"
 BTN_ROOM = "Кабинет"
+BTN_FREE = "Свободные кабинеты"
 BTN_FAV = "Избранное"
 
 MENU_BUTTONS = {
     BTN_NOW, BTN_BELLS, BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_UPCOMING,
-    BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM, BTN_FAV,
+    BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM, BTN_FREE, BTN_FAV,
 }
 
 FAV_KINDS = {"g": "group", "t": "teacher", "r": "room"}
@@ -83,7 +87,10 @@ HELP_TEXT = (
     "Дату можно прислать текстом: 05.06 или 05.06.2026.\n"
     "Преподаватель — расписание по фамилии, можно запомнить свою.\n"
     "Кабинет — что проходит в кабинете.\n"
+    "Свободные кабинеты — какие кабинеты сейчас свободны.\n"
     "Избранное — быстрый доступ к сохраненным группам, преподам и кабинетам.\n\n"
+    "/find текст — найти пары по названию предмета\n"
+    "/report текст — сообщить об ошибке\n"
     "/group — сменить группу\n"
     "/groups — список всех групп\n"
     "/look ГРУППА [дата] — расписание другой группы без сохранения\n"
@@ -102,6 +109,7 @@ class Form(StatesGroup):
     waiting_group = State()
     waiting_teacher = State()
     waiting_room = State()
+    waiting_report = State()
 
 
 def main_kb():
@@ -111,7 +119,7 @@ def main_kb():
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW)],
             [KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_UPCOMING)],
             [KeyboardButton(text=BTN_TEACHER), KeyboardButton(text=BTN_ROOM)],
-            [KeyboardButton(text=BTN_FAV)],
+            [KeyboardButton(text=BTN_FREE), KeyboardButton(text=BTN_FAV)],
             [KeyboardButton(text=BTN_GROUP), KeyboardButton(text=BTN_NOTIFY)],
         ],
         resize_keyboard=True,
@@ -750,6 +758,115 @@ async def pick_room_date(callback: CallbackQuery):
     d = date.fromisoformat(callback.data.split(":", 1)[1])
     await send_room(callback.message, room, d)
     await callback.answer()
+
+
+@router.message(Command("free"))
+@router.message(F.text == BTN_FREE)
+async def btn_free(message: Message):
+    n = config.now()
+    now_min = n.hour * 60 + n.minute
+    try:
+        status, payload = await schedule.get_free_rooms(config.today(), now_min)
+    except Exception:
+        logging.exception("get_free_rooms failed")
+        await message.answer("Не получилось загрузить, попробуй позже")
+        return
+    if status == "ok":
+        free, busy = payload
+        await message.answer(schedule.format_free_rooms(now_min, free, busy))
+    elif status == "no_date":
+        await message.answer("На сегодня расписания нет")
+    else:
+        await message.answer("Не получилось прочитать таблицу, попробуй позже")
+
+
+@router.message(Command("find"))
+async def cmd_find(message: Message):
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Формат: /find текст. Например: /find матан")
+        return
+    query = parts[1].strip()
+    dates = await schedule.upcoming_dates(config.today(), limit=6)
+    chunks = []
+    for d in dates:
+        try:
+            status, matches = await schedule.get_subject_schedule(d, query)
+        except Exception:
+            logging.exception("get_subject_schedule failed")
+            continue
+        if status != "ok":
+            continue
+        lines = [date_label(d) + ":"]
+        for num, tm, group, cell in matches:
+            title = f"{num} пара" if num else (tm or "")
+            lines.append(f"{title} {group} — {schedule.oneline_cell(cell)}".strip())
+        chunks.append("\n".join(lines))
+    if not chunks:
+        await message.answer(f"По запросу «{query}» на ближайшие дни ничего не нашел")
+        return
+    await send_long(message, f"Нашел «{query}»:\n\n" + "\n\n".join(chunks))
+
+
+async def forward_report(message: Message, text):
+    u = message.from_user
+    who = f"@{u.username}" if u.username else (u.first_name or f"id{u.id}")
+    if config.ADMIN_ID:
+        try:
+            await message.bot.send_message(
+                config.ADMIN_ID,
+                f"Сообщение об ошибке от {who} (id{u.id}):\n\n{text}",
+            )
+        except Exception:
+            logging.exception("report forward failed")
+    await message.answer("Спасибо, передал разработчику")
+
+
+@router.message(Command("report"))
+async def cmd_report(message: Message, state: FSMContext):
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip():
+        await forward_report(message, parts[1].strip())
+        return
+    await state.set_state(Form.waiting_report)
+    await message.answer("Напиши, что не так с ботом или расписанием — передам разработчику")
+
+
+@router.message(Form.waiting_report, F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
+async def take_report(message: Message, state: FSMContext):
+    await state.clear()
+    await forward_report(message, message.text.strip())
+
+
+@router.inline_query()
+async def inline_query(query: InlineQuery):
+    text = query.query.strip()
+    if not text:
+        await query.answer([], cache_time=10, is_personal=True)
+        return
+    d = config.today()
+    try:
+        status, payload = await schedule.get_schedule(d, text)
+    except Exception:
+        logging.exception("inline get_schedule failed")
+        status, payload = "error", None
+    if status == "ok":
+        content = schedule.format_schedule(d, text, payload)
+        title = f"{text} на сегодня"
+    elif status == "no_group":
+        content = f"Группа {text} на сегодня не найдена"
+        title = "Группа не найдена"
+    elif status == "no_date":
+        content = title = "На сегодня расписания нет"
+    else:
+        content = title = "Не получилось получить расписание"
+    result = InlineQueryResultArticle(
+        id="today",
+        title=title,
+        description="нажми, чтобы отправить расписание",
+        input_message_content=InputTextMessageContent(message_text=content),
+    )
+    await query.answer([result], cache_time=60, is_personal=True)
 
 
 def fav_keyboard(favs):

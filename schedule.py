@@ -230,6 +230,56 @@ def extract_for_room(rows, room):
     return result
 
 
+def free_rooms(rows, now_min):
+    room_re = re.compile(r"каб\.?\s*0*(\d+)")
+    all_rooms = set()
+    busy = set()
+    header = None
+    for r in rows:
+        if _is_header(r):
+            header = r
+            continue
+        if header is None:
+            continue
+        tm = "-".join(_lines(r[1])) if len(r) > 1 else ""
+        start, end = _parse_times(tm)
+        running = start is not None and end is not None and start <= now_min <= end
+        for col in range(2, len(r)):
+            raw = r[col]
+            if not raw.strip():
+                continue
+            for room in room_re.findall(_norm_text(raw)):
+                all_rooms.add(room)
+                if running:
+                    busy.add(room)
+    free = sorted(all_rooms - busy, key=int)
+    return free, sorted(busy, key=int)
+
+
+def extract_for_subject(rows, query):
+    q = _norm_text(query)
+    if not q:
+        return []
+    result = []
+    header = None
+    for r in rows:
+        if _is_header(r):
+            header = r
+            continue
+        if header is None:
+            continue
+        num = _inline(r[0]) if len(r) > 0 else ""
+        tm = "-".join(_lines(r[1])) if len(r) > 1 else ""
+        for col in range(2, len(r)):
+            raw = r[col]
+            if not raw.strip():
+                continue
+            if q in _norm_text(raw):
+                group = _inline(header[col]) if col < len(header) else ""
+                result.append((num, tm, group, "\n".join(_lines(raw))))
+    return result
+
+
 def teacher_windows(rows, lessons):
     busy = sorted({int(n) for n, tm, g, c in lessons if n.isdigit()})
     if not busy:
@@ -344,6 +394,17 @@ def format_bells(d, pairs):
             lines.append(f"{num} пара — {_fmt_hm(start)}")
         else:
             lines.append(f"{num} пара — {tm}")
+    return "\n".join(lines)
+
+
+def format_free_rooms(now_min, free, busy):
+    hm = _fmt_hm(now_min)
+    if not busy:
+        return f"Сейчас ({hm}) идущих пар нет, занятых кабинетов нет"
+    lines = [f"Свободные кабинеты сейчас ({hm}):"]
+    lines.append(", ".join(free) if free else "нет")
+    lines.append("")
+    lines.append("Заняты: " + (", ".join(busy) if busy else "нет"))
     return "\n".join(lines)
 
 
@@ -535,6 +596,29 @@ async def get_bells(d):
     if not has_schedule(rows):
         return "bad_sheet", None
     return "ok", day_pairs(rows)
+
+
+async def get_free_rooms(d, now_min):
+    sheet_id = await get_sheet_id(d)
+    if not sheet_id:
+        return "no_date", None
+    rows = await fetch_csv(sheet_id)
+    if not has_schedule(rows):
+        return "bad_sheet", None
+    return "ok", free_rooms(rows, now_min)
+
+
+async def get_subject_schedule(d, query):
+    sheet_id = await get_sheet_id(d)
+    if not sheet_id:
+        return "no_date", None
+    rows = await fetch_csv(sheet_id)
+    if not has_schedule(rows):
+        return "bad_sheet", None
+    matches = extract_for_subject(rows, query)
+    if not matches:
+        return "not_found", None
+    return "ok", matches
 
 
 async def all_known_groups(around):
