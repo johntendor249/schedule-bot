@@ -8,9 +8,32 @@ import db
 import schedule
 
 
+_source_ok = True
+
+
+async def _alert(bot, text):
+    if not config.ADMIN_ID:
+        return
+    try:
+        await bot.send_message(config.ADMIN_ID, text)
+    except Exception:
+        logging.exception("alert failed")
+
+
+async def health_check(bot):
+    global _source_ok
+    ok = await schedule.check_source()
+    if not ok and _source_ok:
+        _source_ok = False
+        await _alert(bot, "Источник расписания недоступен (tspk.org), проверь сайт")
+    elif ok and not _source_ok:
+        _source_ok = True
+        await _alert(bot, "Источник расписания снова доступен")
+
+
 async def _lessons_for_date(d, groups):
     sheet_id = await schedule.get_sheet_id(d)
-    rows = await schedule.fetch_csv(sheet_id) if sheet_id else None
+    rows = await schedule.fetch_csv(sheet_id, force=True) if sheet_id else None
     result = {}
     for group in groups:
         if rows is None or not schedule.has_schedule(rows):
@@ -64,6 +87,7 @@ async def _notify(bot, group, d, old_lessons, lessons):
 async def run_watcher(bot):
     while True:
         try:
+            await health_check(bot)
             await watch_cycle(bot)
         except asyncio.CancelledError:
             raise

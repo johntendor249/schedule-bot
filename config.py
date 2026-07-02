@@ -15,6 +15,7 @@ ACADEMIC_YEAR_START = date(2025, 9, 1)
 ACADEMIC_YEAR_END = date(2026, 6, 30)
 
 PAGE_CACHE_TTL = 600
+SHEET_CACHE_TTL = 300
 DB_PATH = "bot.db"
 
 TZ = ZoneInfo("Europe/Samara")

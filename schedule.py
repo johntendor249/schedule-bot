@@ -14,6 +14,7 @@ from config import (
     ACADEMIC_YEAR_START,
     ACADEMIC_YEAR_END,
     PAGE_CACHE_TTL,
+    SHEET_CACHE_TTL,
     TZ,
 )
 
@@ -24,14 +25,31 @@ MONTHS = {
 }
 
 _page_cache = {"dates": None, "ts": 0.0, "updated": None}
+_csv_cache = {}
 
 
-async def _fetch(url):
+async def _fetch(url, attempts=3):
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            return await resp.text()
+    last = None
+    for i in range(attempts):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.text()
+        except Exception as e:
+            last = e
+            if i < attempts - 1:
+                await asyncio.sleep(1 + i)
+    raise last
+
+
+async def check_source():
+    try:
+        await _fetch(PAGE_URL)
+        return True
+    except Exception:
+        return False
 
 
 def _inline(s):
@@ -130,10 +148,17 @@ async def upcoming_dates(today, limit=10):
     return sorted(d for d in dates if d >= today)[:limit]
 
 
-async def fetch_csv(sheet_id):
+async def fetch_csv(sheet_id, force=False):
+    now = time.time()
+    if not force:
+        hit = _csv_cache.get(sheet_id)
+        if hit and now - hit[1] < SHEET_CACHE_TTL:
+            return hit[0]
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     text = await _fetch(url)
-    return list(csv.reader(io.StringIO(text)))
+    rows = list(csv.reader(io.StringIO(text)))
+    _csv_cache[sheet_id] = (rows, now)
+    return rows
 
 
 def _is_header(row):
