@@ -75,7 +75,7 @@ HELP_TEXT = (
     "Звонки — время начала и конца пар.\n"
     "Сегодня / Завтра / Неделя / Ближайшие даты — расписание твоей группы.\n"
     "Дату можно прислать текстом: 05.06 или 05.06.2026.\n"
-    "Преподаватель — расписание по фамилии.\n"
+    "Преподаватель — расписание по фамилии, можно запомнить свою.\n"
     "Кабинет — что проходит в кабинете.\n\n"
     "/group — сменить группу\n"
     "/groups — список всех групп\n"
@@ -480,22 +480,32 @@ async def send_teacher(message: Message, teacher, d):
         await message.answer("Не получилось прочитать таблицу с расписанием, попробуй позже")
 
 
-async def send_teacher_dates(message: Message):
+async def teacher_reply(message: Message, teacher, d, is_saved):
+    await send_teacher(message, teacher, d)
     dates = await schedule.upcoming_dates(config.today())
-    if not dates:
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=date_label(d), callback_data=f"tdate:{d.isoformat()}")]
-            for d in dates
-        ]
+    rows = [
+        [InlineKeyboardButton(text=date_label(x), callback_data=f"tdate:{x.isoformat()}")]
+        for x in dates
+    ]
+    actions = []
+    if not is_saved:
+        actions.append(InlineKeyboardButton(text="Запомнить как мою", callback_data="tsave"))
+    actions.append(InlineKeyboardButton(text="Другой преподаватель", callback_data="tother"))
+    rows.append(actions)
+    await message.answer(
+        "Другая дата, запомнить фамилию или сменить:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
-    await message.answer("Другая дата:", reply_markup=kb)
 
 
 @router.message(Command("teacher"))
 @router.message(F.text == BTN_TEACHER)
 async def ask_teacher(message: Message, state: FSMContext):
+    saved = await db.get_teacher(message.from_user.id)
+    if saved:
+        teacher_lookup[message.from_user.id] = saved
+        await teacher_reply(message, saved, config.today(), is_saved=True)
+        return
     await state.set_state(Form.waiting_teacher)
     await message.answer("Напиши фамилию преподавателя, например Соколова")
 
@@ -508,8 +518,8 @@ async def search_teacher(message: Message, state: FSMContext):
     teacher = message.text.strip()
     teacher_lookup[message.from_user.id] = teacher
     await state.clear()
-    await send_teacher(message, teacher, config.today())
-    await send_teacher_dates(message)
+    saved = await db.get_teacher(message.from_user.id)
+    await teacher_reply(message, teacher, config.today(), is_saved=(saved == teacher))
 
 
 @router.callback_query(F.data.startswith("tdate:"))
@@ -521,6 +531,26 @@ async def pick_teacher_date(callback: CallbackQuery):
         return
     d = date.fromisoformat(callback.data.split(":", 1)[1])
     await send_teacher(callback.message, teacher, d)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tsave")
+async def save_teacher(callback: CallbackQuery):
+    teacher = teacher_lookup.get(callback.from_user.id)
+    if not teacher:
+        await callback.answer("Сначала найди преподавателя", show_alert=True)
+        return
+    await db.set_teacher(callback.from_user.id, teacher)
+    await callback.message.answer(
+        f"Запомнил: {teacher}. Теперь по кнопке Преподаватель сразу твое расписание"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tother")
+async def other_teacher(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.waiting_teacher)
+    await callback.message.answer("Напиши фамилию преподавателя, например Соколова")
     await callback.answer()
 
 

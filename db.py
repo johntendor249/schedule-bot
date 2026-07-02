@@ -52,6 +52,7 @@ async def _ensure_columns(conn):
         ("last_seen", "TEXT"),
         ("joined_at", "TEXT"),
         ("hits", "INTEGER NOT NULL DEFAULT 0"),
+        ("teacher_name", "TEXT"),
     ):
         if name not in cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
@@ -108,6 +109,26 @@ async def get_group(user_id):
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+
+async def set_teacher(user_id, name):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO users (user_id, teacher_name) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "teacher_name = excluded.teacher_name, updated_at = datetime('now')",
+            (user_id, name),
+        )
+        await conn.commit()
+
+
+async def get_teacher(user_id):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT teacher_name FROM users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else None
 
 
 async def set_notify(user_id, on):
