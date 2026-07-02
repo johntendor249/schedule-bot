@@ -52,6 +52,7 @@ router.message.middleware(track_user)
 router.callback_query.middleware(track_user)
 
 BTN_NOW = "Сейчас"
+BTN_BELLS = "Звонки"
 BTN_TODAY = "Сегодня"
 BTN_TOMORROW = "Завтра"
 BTN_WEEK = "Неделя"
@@ -62,7 +63,7 @@ BTN_TEACHER = "Преподаватель"
 BTN_ROOM = "Кабинет"
 
 MENU_BUTTONS = {
-    BTN_NOW, BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_UPCOMING,
+    BTN_NOW, BTN_BELLS, BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_UPCOMING,
     BTN_GROUP, BTN_NOTIFY, BTN_TEACHER, BTN_ROOM,
 }
 
@@ -71,6 +72,7 @@ WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 HELP_TEXT = (
     "Показываю расписание ТСПК.\n\n"
     "Сейчас — текущая и следующая пара.\n"
+    "Звонки — время начала и конца пар.\n"
     "Сегодня / Завтра / Неделя / Ближайшие даты — расписание твоей группы.\n"
     "Дату можно прислать текстом: 05.06 или 05.06.2026.\n"
     "Преподаватель — расписание по фамилии.\n"
@@ -97,7 +99,7 @@ class Form(StatesGroup):
 def main_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_NOW)],
+            [KeyboardButton(text=BTN_NOW), KeyboardButton(text=BTN_BELLS)],
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW)],
             [KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_UPCOMING)],
             [KeyboardButton(text=BTN_TEACHER), KeyboardButton(text=BTN_ROOM)],
@@ -378,6 +380,29 @@ async def btn_now(message: Message, state: FSMContext):
         await message.answer(f"Группы {group} нет в расписании на сегодня. Смени через /group")
     else:
         await message.answer("Не получилось прочитать таблицу с расписанием, попробуй позже")
+
+
+@router.message(Command("bells"))
+@router.message(F.text == BTN_BELLS)
+async def btn_bells(message: Message):
+    d = config.today()
+    try:
+        status, pairs = await schedule.get_bells(d)
+        if status == "no_date":
+            dates = await schedule.upcoming_dates(d, limit=1)
+            if dates:
+                d = dates[0]
+                status, pairs = await schedule.get_bells(d)
+    except Exception:
+        logging.exception("get_bells failed")
+        await message.answer("Не получилось загрузить звонки, попробуй позже")
+        return
+    if status == "ok":
+        await message.answer(schedule.format_bells(d, pairs))
+    elif status == "no_date":
+        await message.answer("Ближайших дней с расписанием нет")
+    else:
+        await message.answer("Не получилось прочитать расписание звонков, попробуй позже")
 
 
 @router.message(Command("week"))

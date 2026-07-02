@@ -278,6 +278,10 @@ def format_teacher_schedule(d, teacher, lessons, windows=None):
     return "\n\n".join(blocks)
 
 
+def _fmt_hm(m):
+    return f"{m // 60}:{m % 60:02d}"
+
+
 def format_now_next(d, group, lessons, now_min):
     head = f"Группа {group}, {d.strftime('%d.%m.%Y')}"
     if not lessons:
@@ -286,15 +290,35 @@ def format_now_next(d, group, lessons, now_min):
     parts = [head]
     if current:
         num, tm, cell = current
-        parts.append(f"Сейчас идет {num} пара (до {tm.split('-')[-1]}):\n{cell}")
+        start, end = _parse_times(tm)
+        tail = f" (до {_fmt_hm(end)}, осталось {end - now_min} мин)" if end is not None else ""
+        parts.append(f"Сейчас идет {num} пара{tail}:\n{cell}")
     else:
         parts.append("Сейчас пары нет")
     if nxt:
         num, tm, cell = nxt
-        parts.append(f"Следующая — {num} пара в {tm.split('-')[0]}:\n{cell}")
+        start, end = _parse_times(tm)
+        tail = f" в {_fmt_hm(start)} (через {start - now_min} мин)" if start is not None else ""
+        parts.append(f"Следующая — {num} пара{tail}:\n{cell}")
     else:
         parts.append("Дальше пар на сегодня нет")
     return "\n\n".join(parts)
+
+
+def format_bells(d, pairs):
+    head = f"Расписание звонков на {d.strftime('%d.%m.%Y')}"
+    if not pairs:
+        return head + "\n\nНа этот день пар нет"
+    lines = [head, ""]
+    for num, tm in pairs:
+        start, end = _parse_times(tm)
+        if start is not None and end is not None:
+            lines.append(f"{num} пара — {_fmt_hm(start)}-{_fmt_hm(end)}")
+        elif start is not None:
+            lines.append(f"{num} пара — {_fmt_hm(start)}")
+        else:
+            lines.append(f"{num} пара — {tm}")
+    return "\n".join(lines)
 
 
 def format_room_schedule(d, room, lessons):
@@ -386,6 +410,16 @@ async def get_room_schedule(d, room):
     if not lessons:
         return "not_found", None
     return "ok", lessons
+
+
+async def get_bells(d):
+    sheet_id = await get_sheet_id(d)
+    if not sheet_id:
+        return "no_date", None
+    rows = await fetch_csv(sheet_id)
+    if not has_schedule(rows):
+        return "bad_sheet", None
+    return "ok", day_pairs(rows)
 
 
 async def all_known_groups(around):
