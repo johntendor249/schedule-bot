@@ -6,6 +6,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -157,7 +158,15 @@ async def source_footer(d):
     return "\n\n" + "\n".join(lines) if lines else ""
 
 
-async def send_schedule(message: Message, group, d):
+def ics_day_kb(d):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="В календарь", callback_data=f"ics:{d.isoformat()}")]
+        ]
+    )
+
+
+async def send_schedule(message: Message, group, d, offer_ics=False):
     try:
         status, payload = await schedule.get_schedule(d, group)
     except Exception:
@@ -165,7 +174,11 @@ async def send_schedule(message: Message, group, d):
         await message.answer("Не получилось загрузить расписание, попробуй позже")
         return
     if status == "ok":
-        await message.answer(schedule.format_schedule(d, group, payload) + await source_footer(d))
+        kb = ics_day_kb(d) if offer_ics and payload else None
+        await message.answer(
+            schedule.format_schedule(d, group, payload) + await source_footer(d),
+            reply_markup=kb,
+        )
     elif status == "no_date":
         await message.answer(f"На {d.strftime('%d.%m.%Y')} расписания нет")
     elif status == "no_group":
@@ -346,14 +359,14 @@ async def btn_notify(message: Message, state: FSMContext):
 async def btn_today(message: Message, state: FSMContext):
     group = await require_group(message, state)
     if group:
-        await send_schedule(message, group, config.today())
+        await send_schedule(message, group, config.today(), offer_ics=True)
 
 
 @router.message(F.text == BTN_TOMORROW)
 async def btn_tomorrow(message: Message, state: FSMContext):
     group = await require_group(message, state)
     if group:
-        await send_schedule(message, group, config.today() + timedelta(days=1))
+        await send_schedule(message, group, config.today() + timedelta(days=1), offer_ics=True)
 
 
 @router.message(Command("now"))
@@ -428,6 +441,14 @@ async def btn_week(message: Message, state: FSMContext):
         await message.answer(f"Расписание для группы {group} не найдено")
         return
     await send_long(message, "\n\n———\n\n".join(chunks) + await source_footer(dates[0]))
+    await message.answer(
+        "Добавить эти дни в календарь:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Неделя в календарь", callback_data="icsweek")]
+            ]
+        ),
+    )
 
 
 @router.message(F.text == BTN_UPCOMING)
@@ -453,8 +474,59 @@ async def pick_date(callback: CallbackQuery):
         await callback.answer()
         return
     d = date.fromisoformat(callback.data.split(":", 1)[1])
-    await send_schedule(callback.message, group, d)
+    await send_schedule(callback.message, group, d, offer_ics=True)
     await callback.answer()
+
+
+async def send_ics(message: Message, events, filename):
+    ics = schedule.build_ics(events)
+    await message.answer_document(
+        BufferedInputFile(ics.encode("utf-8"), filename=filename)
+    )
+
+
+@router.callback_query(F.data.startswith("ics:"))
+async def ics_day(callback: CallbackQuery):
+    group = await db.get_group(callback.from_user.id)
+    if not group:
+        await callback.answer("Сначала укажи группу", show_alert=True)
+        return
+    d = date.fromisoformat(callback.data.split(":", 1)[1])
+    try:
+        status, lessons = await schedule.get_schedule(d, group)
+    except Exception:
+        logging.exception("ics get_schedule failed")
+        await callback.answer("Не получилось загрузить расписание", show_alert=True)
+        return
+    events = schedule.lessons_to_events(d, group, lessons) if status == "ok" else []
+    if not events:
+        await callback.answer("Нечего добавить в календарь", show_alert=True)
+        return
+    await send_ics(callback.message, events, f"raspisanie_{d.isoformat()}.ics")
+    await callback.answer("Файл готов")
+
+
+@router.callback_query(F.data == "icsweek")
+async def ics_week(callback: CallbackQuery):
+    group = await db.get_group(callback.from_user.id)
+    if not group:
+        await callback.answer("Сначала укажи группу", show_alert=True)
+        return
+    dates = await schedule.upcoming_dates(config.today(), limit=6)
+    events = []
+    for d in dates:
+        try:
+            status, lessons = await schedule.get_schedule(d, group)
+        except Exception:
+            logging.exception("ics week get_schedule failed")
+            continue
+        if status == "ok":
+            events += schedule.lessons_to_events(d, group, lessons)
+    if not events:
+        await callback.answer("Нечего добавить в календарь", show_alert=True)
+        return
+    await send_ics(callback.message, events, "raspisanie_nedelya.ics")
+    await callback.answer("Файл готов")
 
 
 async def send_teacher(message: Message, teacher, d):

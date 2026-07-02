@@ -4,7 +4,7 @@ import hashlib
 import io
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -14,6 +14,7 @@ from config import (
     ACADEMIC_YEAR_START,
     ACADEMIC_YEAR_END,
     PAGE_CACHE_TTL,
+    TZ,
 )
 
 MONTHS = {
@@ -319,6 +320,57 @@ def format_bells(d, pairs):
         else:
             lines.append(f"{num} пара — {tm}")
     return "\n".join(lines)
+
+
+def _dt_utc(d, minutes):
+    local = datetime(d.year, d.month, d.day, minutes // 60, minutes % 60, tzinfo=TZ)
+    return local.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _ics_escape(text):
+    return (
+        text.replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+    )
+
+
+def lessons_to_events(d, group, lessons):
+    events = []
+    for num, tm, cell in lessons:
+        start, end = _parse_times(tm)
+        if start is None:
+            continue
+        if end is None:
+            end = start + 90
+        subject = cell.split("\n")[0] if cell else "Пара"
+        summary = f"{num} пара: {subject}" if num else subject
+        events.append((_dt_utc(d, start), _dt_utc(d, end), summary, cell))
+    return events
+
+
+def build_ics(events):
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//tspk schedule bot//RU",
+        "CALSCALE:GREGORIAN",
+    ]
+    for i, (start, end, summary, desc) in enumerate(events):
+        lines += [
+            "BEGIN:VEVENT",
+            f"UID:{start}-{i}@tspk-bot",
+            f"DTSTAMP:{start}",
+            f"DTSTART:{start}",
+            f"DTEND:{end}",
+            f"SUMMARY:{_ics_escape(summary)}",
+        ]
+        if desc:
+            lines.append(f"DESCRIPTION:{_ics_escape(desc)}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
 
 
 def format_room_schedule(d, room, lessons):
