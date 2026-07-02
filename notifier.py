@@ -123,3 +123,53 @@ async def run_digest(bot):
         except Exception:
             logging.exception("digest tick failed")
         await asyncio.sleep(config.DIGEST_TICK)
+
+
+async def remind_tick(bot):
+    users = await db.remind_users()
+    if not users:
+        return
+    groups = {}
+    for user_id, group in users:
+        groups.setdefault(group, []).append(user_id)
+    now = config.now()
+    today = now.date()
+    cur = now.hour * 60 + now.minute
+    for group, uids in groups.items():
+        try:
+            status, lessons = await schedule.get_schedule(today, group)
+        except Exception:
+            logging.exception("remind fetch failed for %s", group)
+            continue
+        if status != "ok" or not lessons:
+            continue
+        for num, tm, cell in lessons:
+            start, _ = schedule.parse_times(tm)
+            if start is None:
+                continue
+            target = start - config.REMIND_LEAD
+            if not (target <= cur < target + config.REMIND_WINDOW):
+                continue
+            pair = num or tm
+            if await db.was_reminded(group, today.isoformat(), pair):
+                continue
+            await db.mark_reminded(group, today.isoformat(), pair)
+            head = f"Через {start - cur} мин {num} пара" if num else f"Через {start - cur} мин пара"
+            text = f"{head} ({schedule.fmt_hm(start)}): {schedule.oneline_cell(cell)}"
+            for user_id in uids:
+                try:
+                    await bot.send_message(user_id, text)
+                except Exception:
+                    logging.exception("remind send to %s failed", user_id)
+                await asyncio.sleep(0.05)
+
+
+async def run_reminder(bot):
+    while True:
+        try:
+            await remind_tick(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("remind tick failed")
+        await asyncio.sleep(config.REMIND_TICK)

@@ -527,6 +527,11 @@ async def all_known_groups(around):
     return []
 
 
+parse_times = _parse_times
+fmt_hm = _fmt_hm
+oneline_cell = _oneline_cell
+
+
 if __name__ == "__main__":
     import sys
 

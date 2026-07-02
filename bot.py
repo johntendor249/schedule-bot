@@ -21,17 +21,19 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
-    watcher = asyncio.create_task(notifier.run_watcher(bot))
-    digest = asyncio.create_task(notifier.run_digest(bot))
+    tasks = [
+        asyncio.create_task(notifier.run_watcher(bot)),
+        asyncio.create_task(notifier.run_digest(bot)),
+        asyncio.create_task(notifier.run_reminder(bot)),
+    ]
     try:
         await dp.start_polling(bot)
     finally:
-        watcher.cancel()
-        digest.cancel()
-        with suppress(asyncio.CancelledError):
-            await watcher
-        with suppress(asyncio.CancelledError):
-            await digest
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
         await bot.session.close()
 
 

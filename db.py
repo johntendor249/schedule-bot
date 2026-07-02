@@ -56,6 +56,16 @@ async def init_db():
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                group_name TEXT NOT NULL,
+                day TEXT NOT NULL,
+                pair TEXT NOT NULL,
+                PRIMARY KEY (group_name, day, pair)
+            )
+            """
+        )
         await _ensure_columns(conn)
         await conn.commit()
 
@@ -72,6 +82,7 @@ async def _ensure_columns(conn):
         ("hits", "INTEGER NOT NULL DEFAULT 0"),
         ("teacher_name", "TEXT"),
         ("digest", "INTEGER NOT NULL DEFAULT 0"),
+        ("remind", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
@@ -240,6 +251,50 @@ async def set_digest_sent(kind, day):
             "INSERT INTO digest_log (kind, day) VALUES (?, ?) "
             "ON CONFLICT(kind) DO UPDATE SET day = excluded.day",
             (kind, day),
+        )
+        await conn.commit()
+
+
+async def set_remind(user_id, on):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE users SET remind = ? WHERE user_id = ?",
+            (1 if on else 0, user_id),
+        )
+        await conn.commit()
+
+
+async def get_remind(user_id):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT remind FROM users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
+
+
+async def remind_users():
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT user_id, group_name FROM users WHERE remind = 1 AND group_name <> ''"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def was_reminded(group, day, pair):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT 1 FROM reminder_log WHERE group_name = ? AND day = ? AND pair = ?",
+            (group, day, pair),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def mark_reminded(group, day, pair):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO reminder_log (group_name, day, pair) VALUES (?, ?, ?)",
+            (group, day, pair),
         )
         await conn.commit()
 

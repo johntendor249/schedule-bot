@@ -356,7 +356,7 @@ async def cmd_look(message: Message):
     await send_schedule(message, group, d, offer_ics=True)
 
 
-def settings_kb(notify, digest):
+def settings_kb(notify, digest, remind):
     def label(name, on):
         return f"{name}: {'вкл' if on else 'выкл'}"
 
@@ -364,7 +364,16 @@ def settings_kb(notify, digest):
         inline_keyboard=[
             [InlineKeyboardButton(text=label("Изменения расписания", notify), callback_data="set:notify")],
             [InlineKeyboardButton(text=label("Ежедневная сводка", digest), callback_data="set:digest")],
+            [InlineKeyboardButton(text=label("Напоминания перед парой", remind), callback_data="set:remind")],
         ]
+    )
+
+
+async def user_settings(uid):
+    return (
+        await db.get_notify(uid),
+        await db.get_digest(uid),
+        await db.get_remind(uid),
     )
 
 
@@ -373,36 +382,41 @@ async def btn_notify(message: Message, state: FSMContext):
     group = await require_group(message, state)
     if not group:
         return
-    notify = await db.get_notify(message.from_user.id)
-    digest = await db.get_digest(message.from_user.id)
+    notify, digest, remind = await user_settings(message.from_user.id)
     await message.answer(
         f"Уведомления для группы {group}.\n"
         "Изменения — пришлю, если расписание поменяется.\n"
-        "Ежедневная сводка — утром расписание на сегодня, вечером на завтра.",
-        reply_markup=settings_kb(notify, digest),
+        "Ежедневная сводка — утром расписание на сегодня, вечером на завтра.\n"
+        f"Напоминания — за {config.REMIND_LEAD} минут до каждой пары.",
+        reply_markup=settings_kb(notify, digest, remind),
     )
 
 
 @router.callback_query(F.data == "set:notify")
 async def toggle_notify(callback: CallbackQuery):
     uid = callback.from_user.id
-    new = not await db.get_notify(uid)
-    await db.set_notify(uid, new)
-    await callback.message.edit_reply_markup(
-        reply_markup=settings_kb(new, await db.get_digest(uid))
-    )
-    await callback.answer("Изменения: " + ("вкл" if new else "выкл"))
+    await db.set_notify(uid, not await db.get_notify(uid))
+    notify, digest, remind = await user_settings(uid)
+    await callback.message.edit_reply_markup(reply_markup=settings_kb(notify, digest, remind))
+    await callback.answer("Изменения: " + ("вкл" if notify else "выкл"))
 
 
 @router.callback_query(F.data == "set:digest")
 async def toggle_digest(callback: CallbackQuery):
     uid = callback.from_user.id
-    new = not await db.get_digest(uid)
-    await db.set_digest(uid, new)
-    await callback.message.edit_reply_markup(
-        reply_markup=settings_kb(await db.get_notify(uid), new)
-    )
-    await callback.answer("Сводка: " + ("вкл" if new else "выкл"))
+    await db.set_digest(uid, not await db.get_digest(uid))
+    notify, digest, remind = await user_settings(uid)
+    await callback.message.edit_reply_markup(reply_markup=settings_kb(notify, digest, remind))
+    await callback.answer("Сводка: " + ("вкл" if digest else "выкл"))
+
+
+@router.callback_query(F.data == "set:remind")
+async def toggle_remind(callback: CallbackQuery):
+    uid = callback.from_user.id
+    await db.set_remind(uid, not await db.get_remind(uid))
+    notify, digest, remind = await user_settings(uid)
+    await callback.message.edit_reply_markup(reply_markup=settings_kb(notify, digest, remind))
+    await callback.answer("Напоминания: " + ("вкл" if remind else "выкл"))
 
 
 @router.message(F.text == BTN_TODAY)

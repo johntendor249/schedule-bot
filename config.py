@@ -26,6 +26,10 @@ DIGEST_EVENING = (20, 0)
 DIGEST_WINDOW = 60
 DIGEST_TICK = 60
 
+REMIND_LEAD = 15
+REMIND_WINDOW = 10
+REMIND_TICK = 60
+
 
 def today():
     return datetime.now(TZ).date()
