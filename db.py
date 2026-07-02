@@ -48,6 +48,14 @@ async def init_db():
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS digest_log (
+                kind TEXT PRIMARY KEY,
+                day TEXT NOT NULL
+            )
+            """
+        )
         await _ensure_columns(conn)
         await conn.commit()
 
@@ -63,6 +71,7 @@ async def _ensure_columns(conn):
         ("joined_at", "TEXT"),
         ("hits", "INTEGER NOT NULL DEFAULT 0"),
         ("teacher_name", "TEXT"),
+        ("digest", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
@@ -184,6 +193,51 @@ async def get_notify(user_id):
         ) as cur:
             row = await cur.fetchone()
             return bool(row[0]) if row else False
+
+
+async def set_digest(user_id, on):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE users SET digest = ? WHERE user_id = ?",
+            (1 if on else 0, user_id),
+        )
+        await conn.commit()
+
+
+async def get_digest(user_id):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT digest FROM users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
+
+
+async def digest_users():
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT user_id, group_name FROM users WHERE digest = 1 AND group_name <> ''"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def get_digest_sent(kind):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT day FROM digest_log WHERE kind = ?", (kind,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_digest_sent(kind, day):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO digest_log (kind, day) VALUES (?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET day = excluded.day",
+            (kind, day),
+        )
+        await conn.commit()
 
 
 async def subscribed_groups():

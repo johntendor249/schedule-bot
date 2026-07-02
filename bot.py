@@ -22,12 +22,16 @@ async def main():
     dp.include_router(router)
 
     watcher = asyncio.create_task(notifier.run_watcher(bot))
+    digest = asyncio.create_task(notifier.run_digest(bot))
     try:
         await dp.start_polling(bot)
     finally:
         watcher.cancel()
+        digest.cancel()
         with suppress(asyncio.CancelledError):
             await watcher
+        with suppress(asyncio.CancelledError):
+            await digest
         await bot.session.close()
 
 

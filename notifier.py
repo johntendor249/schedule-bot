@@ -61,3 +61,56 @@ async def run_watcher(bot):
         except Exception:
             logging.exception("watch cycle failed")
         await asyncio.sleep(config.CHECK_INTERVAL)
+
+
+async def send_digest(bot, kind, d):
+    users = await db.digest_users()
+    if not users:
+        return
+    cache = {}
+    label = "Расписание на сегодня" if kind == "morning" else "Расписание на завтра"
+    for user_id, group in users:
+        if group not in cache:
+            try:
+                cache[group] = await schedule.get_schedule(d, group)
+            except Exception:
+                logging.exception("digest fetch failed for %s", group)
+                cache[group] = ("error", None)
+        status, lessons = cache[group]
+        if status != "ok":
+            continue
+        text = label + "\n\n" + schedule.format_schedule(d, group, lessons)
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            logging.exception("digest send to %s failed", user_id)
+        await asyncio.sleep(0.05)
+
+
+async def digest_tick(bot):
+    now = config.now()
+    today = now.date()
+    cur = now.hour * 60 + now.minute
+    plan = (
+        ("morning", config.DIGEST_MORNING, 0),
+        ("evening", config.DIGEST_EVENING, 1),
+    )
+    for kind, (h, m), offset in plan:
+        target = h * 60 + m
+        if not (target <= cur < target + config.DIGEST_WINDOW):
+            continue
+        if await db.get_digest_sent(kind) == today.isoformat():
+            continue
+        await send_digest(bot, kind, today + timedelta(days=offset))
+        await db.set_digest_sent(kind, today.isoformat())
+
+
+async def run_digest(bot):
+    while True:
+        try:
+            await digest_tick(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("digest tick failed")
+        await asyncio.sleep(config.DIGEST_TICK)

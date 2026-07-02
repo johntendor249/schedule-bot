@@ -90,7 +90,8 @@ HELP_TEXT = (
     "/teacher — поиск по преподавателю\n"
     "/room — поиск по кабинету\n"
     "/subscribe — уведомления об изменениях\n"
-    "/unsubscribe — выключить уведомления"
+    "/unsubscribe — выключить уведомления\n"
+    "Уведомления — изменения расписания и ежедневная сводка"
 )
 
 teacher_lookup = {}
@@ -355,16 +356,53 @@ async def cmd_look(message: Message):
     await send_schedule(message, group, d, offer_ics=True)
 
 
+def settings_kb(notify, digest):
+    def label(name, on):
+        return f"{name}: {'вкл' if on else 'выкл'}"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label("Изменения расписания", notify), callback_data="set:notify")],
+            [InlineKeyboardButton(text=label("Ежедневная сводка", digest), callback_data="set:digest")],
+        ]
+    )
+
+
 @router.message(F.text == BTN_NOTIFY)
 async def btn_notify(message: Message, state: FSMContext):
     group = await require_group(message, state)
     if not group:
         return
-    if await db.get_notify(message.from_user.id):
-        await db.set_notify(message.from_user.id, False)
-        await message.answer("Уведомления выключены")
-    else:
-        await enable_notify(message, group)
+    notify = await db.get_notify(message.from_user.id)
+    digest = await db.get_digest(message.from_user.id)
+    await message.answer(
+        f"Уведомления для группы {group}.\n"
+        "Изменения — пришлю, если расписание поменяется.\n"
+        "Ежедневная сводка — утром расписание на сегодня, вечером на завтра.",
+        reply_markup=settings_kb(notify, digest),
+    )
+
+
+@router.callback_query(F.data == "set:notify")
+async def toggle_notify(callback: CallbackQuery):
+    uid = callback.from_user.id
+    new = not await db.get_notify(uid)
+    await db.set_notify(uid, new)
+    await callback.message.edit_reply_markup(
+        reply_markup=settings_kb(new, await db.get_digest(uid))
+    )
+    await callback.answer("Изменения: " + ("вкл" if new else "выкл"))
+
+
+@router.callback_query(F.data == "set:digest")
+async def toggle_digest(callback: CallbackQuery):
+    uid = callback.from_user.id
+    new = not await db.get_digest(uid)
+    await db.set_digest(uid, new)
+    await callback.message.edit_reply_markup(
+        reply_markup=settings_kb(await db.get_notify(uid), new)
+    )
+    await callback.answer("Сводка: " + ("вкл" if new else "выкл"))
 
 
 @router.message(F.text == BTN_TODAY)

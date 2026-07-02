@@ -21,6 +21,11 @@ TZ = ZoneInfo("Europe/Samara")
 CHECK_INTERVAL = 900
 WATCH_DAYS = 2
 
+DIGEST_MORNING = (7, 30)
+DIGEST_EVENING = (20, 0)
+DIGEST_WINDOW = 60
+DIGEST_TICK = 60
+
 
 def today():
     return datetime.now(TZ).date()
