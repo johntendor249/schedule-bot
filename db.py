@@ -148,7 +148,7 @@ async def get_group(user_id):
 async def set_teacher(user_id, name):
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
-            "INSERT INTO users (user_id, teacher_name) VALUES (?, ?) "
+            "INSERT INTO users (user_id, group_name, teacher_name) VALUES (?, '', ?) "
             "ON CONFLICT(user_id) DO UPDATE SET "
             "teacher_name = excluded.teacher_name, updated_at = datetime('now')",
             (user_id, name),
