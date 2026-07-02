@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import timedelta
 
@@ -33,17 +34,25 @@ async def watch_cycle(bot):
             continue
         for group, lessons in lessons_by_group.items():
             sig = schedule.signature(lessons)
-            old = await db.get_signature(group, d.isoformat())
-            await db.set_signature(group, d.isoformat(), sig)
-            if old is not None and old != sig:
-                await _notify(bot, group, d, lessons)
+            old_sig, old_json = await db.get_cache(group, d.isoformat())
+            dumped = json.dumps(lessons, ensure_ascii=False) if lessons else None
+            await db.set_cache(group, d.isoformat(), sig, dumped)
+            if old_sig is not None and old_sig != sig:
+                old_lessons = json.loads(old_json) if old_json else None
+                await _notify(bot, group, d, old_lessons, lessons)
 
 
-async def _notify(bot, group, d, lessons):
-    if lessons:
-        text = "Обновилось расписание!\n\n" + schedule.format_schedule(d, group, lessons)
+async def _notify(bot, group, d, old_lessons, lessons):
+    head = f"Расписание на {d.strftime('%d.%m.%Y')}, группа {group}"
+    if not lessons:
+        text = head + " — пары убрали"
     else:
-        text = f"Расписание на {d.strftime('%d.%m.%Y')} для группы {group} убрали"
+        changes = schedule.diff_lessons(old_lessons, lessons)
+        summary = "\n".join(changes) if changes else "обновилось"
+        text = (
+            head + " изменилось:\n" + summary + "\n\n"
+            + schedule.format_schedule(d, group, lessons)
+        )
     for user_id in await db.users_for_group(group):
         try:
             await bot.send_message(user_id, text)

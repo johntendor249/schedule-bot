@@ -75,6 +75,10 @@ async def _ensure_columns(conn):
     ):
         if name not in cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+    async with conn.execute("PRAGMA table_info(schedule_cache)") as cur:
+        cache_cols = {row[1] for row in await cur.fetchall()}
+    if "lessons" not in cache_cols:
+        await conn.execute("ALTER TABLE schedule_cache ADD COLUMN lessons TEXT")
 
 
 async def touch_user(user_id, username, first_name):
@@ -256,22 +260,24 @@ async def users_for_group(group):
             return [row[0] for row in await cur.fetchall()]
 
 
-async def get_signature(group, day):
+async def get_cache(group, day):
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute(
-            "SELECT signature FROM schedule_cache WHERE group_name = ? AND day = ?",
+            "SELECT signature, lessons FROM schedule_cache WHERE group_name = ? AND day = ?",
             (group, day),
         ) as cur:
             row = await cur.fetchone()
-            return row[0] if row else None
+            return (row[0], row[1]) if row else (None, None)
 
 
-async def set_signature(group, day, signature):
+async def set_cache(group, day, signature, lessons):
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
-            "INSERT INTO schedule_cache (group_name, day, signature) VALUES (?, ?, ?) "
-            "ON CONFLICT(group_name, day) DO UPDATE SET signature = excluded.signature",
-            (group, day, signature),
+            "INSERT INTO schedule_cache (group_name, day, signature, lessons) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(group_name, day) DO UPDATE SET "
+            "signature = excluded.signature, lessons = excluded.lessons",
+            (group, day, signature, lessons),
         )
         await conn.commit()
 

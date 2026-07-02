@@ -406,6 +406,44 @@ def signature(lessons):
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def _oneline_cell(cell):
+    return ", ".join(_lines(cell)) if cell else ""
+
+
+def diff_lessons(old, new):
+    def by_num(ls):
+        numbered = {}
+        extras = []
+        for num, tm, cell in ls or []:
+            if num:
+                numbered[num] = (tm, cell)
+            else:
+                extras.append(cell)
+        return numbered, extras
+
+    old_num, old_extra = by_num(old)
+    new_num, new_extra = by_num(new)
+    lines = []
+    nums = sorted(
+        set(old_num) | set(new_num),
+        key=lambda n: int(n) if n.isdigit() else 999,
+    )
+    for num in nums:
+        if num in old_num and num not in new_num:
+            lines.append(f"{num} пара — убрали")
+        elif num not in old_num and num in new_num:
+            lines.append(f"{num} пара — поставили: {_oneline_cell(new_num[num][1])}")
+        elif old_num[num] != new_num[num]:
+            lines.append(f"{num} пара — теперь: {_oneline_cell(new_num[num][1])}")
+    for cell in new_extra:
+        if cell not in old_extra:
+            lines.append(f"добавили: {_oneline_cell(cell)}")
+    for cell in old_extra:
+        if cell not in new_extra:
+            lines.append(f"убрали: {_oneline_cell(cell)}")
+    return lines
+
+
 async def canonical_group(group, around):
     target = _norm_group(group)
     dates = await upcoming_dates(around, limit=3)
